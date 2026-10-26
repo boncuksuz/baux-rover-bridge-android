@@ -29,13 +29,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Locale
+import java.security.SecureRandom
 
 /** Eşleştirilmiş BAUX-ROVER cihazına güvenli RFCOMM SPP bağlantısı. */
 class BluetoothSppService(
     private val context: Context,
     private val onStateChanged: (State, String) -> Unit
 ) {
-    enum class State { DISCONNECTED, CONNECTING, CONNECTED, TESTING }
+    enum class State { DISCONNECTED, CONNECTING, CONNECTED, TESTING, RTCM_STREAMING }
 
     companion object {
         private const val ROVER_NAME = "BAUX-ROVER"
@@ -43,6 +44,8 @@ class BluetoothSppService(
         private const val CONNECT_TIMEOUT_SECONDS = 12L
         private const val PING_TIMEOUT_SECONDS = 5L
         private const val RSA_TIMEOUT_SECONDS = 20L
+        private const val BXR1_ACK_TIMEOUT_MS = 8_000L
+        private const val BXR1_MAX_ATTEMPTS = Bxr1Protocol.MAX_ATTEMPTS
     }
 
     // Mevcut akış arayüzü RTCM ve sonraki köprü adımları için korunur.
@@ -246,19 +249,26 @@ class BluetoothSppService(
             testBusy = true
             generation
         }
+        report(State.TESTING, "TLS uzak imzalayıcı etkin.")
         return TlsSignerSession(request)
     }
 
     inner class TlsSignerSession internal constructor(private val request: Int) : AutoCloseable {
         @Volatile var lastSignatureElapsedUs: Long = -1
             private set
+        @Volatile private var cancelled = false
+
+        fun cancel() {
+            cancelled = true
+        }
 
         /** TLS ağ iş parçacığından çağrılır; mevcut Bluetooth worker'ında tek imza yürütür. */
         @Throws(IOException::class)
         fun sign(sha256Hash: ByteArray): ByteArray {
+            if (cancelled) throw IOException("TLS uzak imza oturumu iptal edildi.")
             if (sha256Hash.size != 32) throw IOException("TLS imzası 32 bayt SHA-256 özeti gerektirir.")
             val future = worker.submit<RemoteSignature> {
-                signHashOnWorker(request, sha256Hash.copyOf())
+                signHashOnWorker(request, sha256Hash.copyOf()) { cancelled }
             }
             val result = try {
                 future.get(RSA_TIMEOUT_SECONDS + 5, TimeUnit.SECONDS)
@@ -277,13 +287,19 @@ class BluetoothSppService(
         }
 
         override fun close() {
-            synchronized(lock) { if (isCurrentLocked(request)) testBusy = false }
+            val released = synchronized(lock) {
+                if (isCurrentLocked(request)) {
+                    testBusy = false
+                    true
+                } else false
+            }
+            if (released) reportIfCurrent(request, State.CONNECTED, "TLS imzalayıcı serbest.")
         }
     }
 
     private data class RemoteSignature(val bytes: ByteArray, val elapsedUs: Long)
 
-    private fun signHashOnWorker(request: Int, hash: ByteArray): RemoteSignature {
+    private fun signHashOnWorker(request: Int, hash: ByteArray, isCancelled: () -> Boolean): RemoteSignature {
         val (activeSocket, activeInput, activeOutput) = synchronized(lock) {
             if (!isCurrentLocked(request) || !testBusy) {
                 throw IOException("Bluetooth bağlantısı imza sırasında değişti.")
@@ -292,22 +308,18 @@ class BluetoothSppService(
                 input ?: throw IOException("Bluetooth girişi kapandı."),
                 output ?: throw IOException("Bluetooth çıkışı kapandı."))
         }
-        val timedOut = AtomicBoolean(false)
-        val timeout = timeoutWorker.schedule({
-            timedOut.set(true)
-            closeSocket(activeSocket)
-        }, RSA_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         try {
             activeOutput.write(RsaPssProtocol.requestBytes(hash))
             activeOutput.flush()
             var elapsedUs = -1L
             var unrelatedLines = 0
             while (true) {
-                when (val response = RsaPssProtocol.parseResponse(readResponseLine(activeInput))) {
+                when (val response = RsaPssProtocol.parseResponse(
+                    readResponseLinePolling(activeInput, request, RSA_TIMEOUT_SECONDS * 1000, isCancelled)
+                )) {
                     is RsaPssProtocol.Response.Metrics -> elapsedUs = response.elapsedUs
                     is RsaPssProtocol.Response.SignatureBytes -> {
                         if (elapsedUs < 0) throw IOException("ESP32 imzası metrik satırı olmadan geldi.")
-                        if (timedOut.get()) throw SocketTimeoutException("Bluetooth imzası zaman aşımı.")
                         return RemoteSignature(response.bytes, elapsedUs)
                     }
                     is RsaPssProtocol.Response.DeviceError ->
@@ -318,15 +330,196 @@ class BluetoothSppService(
                 }
             }
         } catch (error: Exception) {
-            closeSocket(activeSocket)
-            reportIfCurrent(request, State.DISCONNECTED,
-                "Bluetooth imzası başarısız; bağlantı kapandı. Yeniden bağlanabilirsiniz.")
-            throw if (timedOut.get()) SocketTimeoutException("Bluetooth imzası zaman aşımı.")
-                else IOException("Bluetooth imzası başarısız: ${error.message ?: error.javaClass.simpleName}", error)
+            if (!isCancelled()) {
+                closeSocket(activeSocket)
+                reportIfCurrent(request, State.DISCONNECTED,
+                    "Bluetooth imzası başarısız; bağlantı kapandı. Yeniden bağlanabilirsiniz.")
+            }
+            throw if (error is SocketTimeoutException || error is InterruptedException)
+                SocketTimeoutException("Bluetooth imzası zaman aşımı.")
+            else IOException("Bluetooth imzası başarısız: ${error.message ?: error.javaClass.simpleName}", error)
         } finally {
-            timeout.cancel(false)
             hash.fill(0)
         }
+    }
+
+    /** Acquires the existing SPP reader/writer for serialized BXR1 traffic. */
+    @Throws(IOException::class)
+    fun beginRtcmTransferSession(): RtcmTransferSession {
+        val request = synchronized(lock) {
+            if (stopped || testBusy || socket == null || input == null || output == null) {
+                throw IOException("Bluetooth bağlantısı RTCM aktarımı için hazır değil.")
+            }
+            testBusy = true
+            generation
+        }
+        report(State.RTCM_STREAMING, "Bluetooth BXR1 RTCM aktarımı etkin.")
+        val initialSequence = SecureRandom().nextInt().toLong() and Bxr1Protocol.UINT32_MAX
+        return RtcmTransferSession(request, initialSequence)
+    }
+
+    data class Bxr1SendResult(val sequence: Long, val payloadBytes: Int, val retries: Int, val nacks: Int)
+
+    inner class RtcmTransferSession internal constructor(
+        private val request: Int,
+        initialSequence: Long
+    ) : AutoCloseable {
+        private val cancelled = AtomicBoolean(false)
+        private var nextSequence = initialSequence
+
+        @Synchronized
+        @Throws(IOException::class)
+        fun sendBlock(payload: ByteArray): Bxr1SendResult {
+            if (cancelled.get()) throw IOException("RTCM aktarımı durduruldu.")
+            val sequence = nextSequence
+            val encoded = Bxr1Protocol.encode(sequence, payload.copyOf())
+            val future = worker.submit<Bxr1SendResult> {
+                sendBxr1BlockOnWorker(request, sequence, encoded, cancelled)
+            }
+            val result = try {
+                future.get(BXR1_ACK_TIMEOUT_MS * BXR1_MAX_ATTEMPTS + 2_000, TimeUnit.MILLISECONDS)
+            } catch (error: ExecutionException) {
+                throw (error.cause as? IOException ?: IOException("BXR1 aktarımı başarısız.", error.cause))
+            } catch (error: TimeoutException) {
+                cancelled.set(true)
+                future.cancel(true)
+                val failedSocket = synchronized(lock) {
+                    if (isCurrentLocked(request)) socket else null
+                }
+                if (failedSocket != null) {
+                    closeSocket(failedSocket)
+                    reportIfCurrent(request, State.DISCONNECTED,
+                        "BXR1 ACK bekleme üst sınırı aşıldı; Bluetooth bağlantısı kapatıldı.")
+                }
+                throw IOException("BXR1 ACK bekleme üst sınırı aşıldı.", error)
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                cancelled.set(true)
+                future.cancel(true)
+                throw IOException("BXR1 ACK bekleme işlemi iptal edildi.", error)
+            }
+            nextSequence = (sequence + 1) and Bxr1Protocol.UINT32_MAX
+            return result
+        }
+
+        fun cancel() {
+            cancelled.set(true)
+        }
+
+        override fun close() {
+            cancelled.set(true)
+            val released = synchronized(lock) {
+                if (isCurrentLocked(request)) {
+                    testBusy = false
+                    true
+                } else false
+            }
+            if (released && isConnected()) {
+                reportIfCurrent(request, State.CONNECTED, "Bluetooth bağlantısı RTCM aktarımı için serbest.")
+            }
+        }
+    }
+
+    private fun sendBxr1BlockOnWorker(
+        request: Int,
+        sequence: Long,
+        frame: Bxr1Protocol.EncodedFrame,
+        cancelled: AtomicBoolean
+    ): Bxr1SendResult {
+        val (activeSocket, activeInput, activeOutput) = synchronized(lock) {
+            if (!isCurrentLocked(request) || !testBusy) throw IOException("Bluetooth RTCM oturumu artık etkin değil.")
+            Triple(socket ?: throw IOException("Bluetooth bağlantısı kapandı."),
+                input ?: throw IOException("Bluetooth girişi kapandı."),
+                output ?: throw IOException("Bluetooth çıkışı kapandı."))
+        }
+        var retries = 0
+        var nacks = 0
+        try {
+            var attempt = 1
+            while (attempt <= BXR1_MAX_ATTEMPTS) {
+                if (cancelled.get()) throw IOException("RTCM aktarımı durduruldu.")
+                activeOutput.write(frame.bytes)
+                activeOutput.flush()
+                val response = try {
+                    Bxr1Protocol.parseResponse(
+                        readResponseLinePolling(activeInput, request, BXR1_ACK_TIMEOUT_MS, cancelled::get)
+                    )
+                } catch (error: SocketTimeoutException) {
+                    if (Bxr1Protocol.retryTimeout(attempt)) {
+                        retries++
+                        attempt++
+                        continue
+                    }
+                    throw IOException("BXR1 ACK zaman aşımı (seq=$sequence).", error)
+                }
+
+                when (response) {
+                    is Bxr1Protocol.Response.Ack -> {
+                        if (response.sequence != sequence || response.length != frame.bytes.size - Bxr1Protocol.FRAME_OVERHEAD_BYTES ||
+                            response.payloadCrc32 != frame.payloadCrc32
+                        ) {
+                            throw IOException("BXR1 ACK sıra, uzunluk veya CRC32 bilgisi eşleşmedi.")
+                        }
+                        return Bxr1SendResult(sequence, response.length, retries, nacks)
+                    }
+                    is Bxr1Protocol.Response.Nack -> {
+                        if (response.sequence != sequence) throw IOException("BXR1 NACK sıra numarası eşleşmedi.")
+                        nacks++
+                        if (Bxr1Protocol.retryNack(response.reason, attempt)) {
+                            retries++
+                            attempt++
+                            continue
+                        }
+                        throw IOException("BXR1 NACK ${response.reason} (seq=$sequence).")
+                    }
+                }
+            }
+            throw IOException("BXR1 aktarım denemeleri tükendi (seq=$sequence).")
+        } catch (error: Exception) {
+            if (!cancelled.get()) {
+                closeSocket(activeSocket)
+                reportIfCurrent(request, State.DISCONNECTED,
+                    "BXR1 RTCM aktarımı başarısız; Bluetooth bağlantısı kapandı. Yeniden bağlanın.")
+            }
+            throw if (error is IOException) error else IOException("BXR1 aktarımı başarısız.", error)
+        }
+    }
+
+    private fun readResponseLinePolling(
+        stream: InputStream,
+        request: Int,
+        timeoutMs: Long,
+        isCancelled: () -> Boolean
+    ): String {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        val line = StringBuilder()
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (isCancelled() || !isCurrent(request)) throw IOException("Bluetooth işlemi iptal edildi.")
+            val available = stream.available()
+            if (available <= 0) {
+                try {
+                    Thread.sleep(5)
+                } catch (error: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IOException("Bluetooth okuma iptal edildi.", error)
+                }
+                continue
+            }
+            repeat(minOf(available, 256)) {
+                val value = stream.read()
+                if (value < 0) throw EOFException("Bluetooth bağlantısı yanıt sırasında kapandı.")
+                if (value == '\n'.code) {
+                    val response = line.toString().trimEnd('\r')
+                    if (response.startsWith("@RTCM:") || response.startsWith("@RSIG:") ||
+                        response.startsWith("RSIG_METRICS ")) return response
+                    line.clear()
+                } else if (value != '\r'.code) {
+                    if (line.length >= 640) throw IOException("Bluetooth yanıt satırı çok uzun.")
+                    line.append(value.toChar())
+                }
+            }
+        }
+        throw SocketTimeoutException("Bluetooth yanıt zaman aşımı.")
     }
 
     private fun loadClientPublicKey(): PublicKey =

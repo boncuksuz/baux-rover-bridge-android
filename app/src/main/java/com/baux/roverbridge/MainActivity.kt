@@ -23,7 +23,7 @@ import com.baux.roverbridge.tls.AzureNtripProbe
 class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "BauxRoverBridge"
-        private const val TEST_VERSION = "BRIDGE-0.2.2-MTLS-TEST"
+        private const val TEST_VERSION = "BRIDGE-0.2.3-RTCM-STREAM"
     }
 
     private lateinit var bluetooth: BluetoothSppService
@@ -32,21 +32,26 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pingButton: Button
     private lateinit var rsaButton: Button
     private lateinit var azureButton: Button
+    private lateinit var rtcmStartButton: Button
+    private lateinit var rtcmStopButton: Button
     private lateinit var azureStatusText: TextView
+    private lateinit var rtcmStatusText: TextView
     private lateinit var disconnectButton: Button
     private lateinit var azureProbe: AzureNtripProbe
     private var currentState = BluetoothSppService.State.DISCONNECTED
     private var azureRunning = false
+    private var pendingLiveStream = false
 
     private val configurationPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) {
             azureRunning = false
+            pendingLiveStream = false
             azureStatusText.text = "NTRIP ayar dosyası seçilmedi."
             updateControls()
         } else {
-            azureProbe.run(uri)
+            if (pendingLiveStream) azureProbe.startLiveStream(uri) else azureProbe.run(uri)
         }
     }
 
@@ -66,12 +71,20 @@ class MainActivity : AppCompatActivity() {
         pingButton = findViewById(R.id.pingButton)
         rsaButton = findViewById(R.id.rsaButton)
         azureButton = findViewById(R.id.azureButton)
+        rtcmStartButton = findViewById(R.id.rtcmStartButton)
+        rtcmStopButton = findViewById(R.id.rtcmStopButton)
         azureStatusText = findViewById(R.id.azureStatusText)
+        rtcmStatusText = findViewById(R.id.rtcmStatusText)
         disconnectButton = findViewById(R.id.disconnectButton)
         findViewById<TextView>(R.id.versionText).text = TEST_VERSION
 
         bluetooth = BluetoothSppService(applicationContext, ::showState)
-        azureProbe = AzureNtripProbe(applicationContext, bluetooth, ::showAzureStatus)
+        azureProbe = AzureNtripProbe(
+            applicationContext,
+            bluetooth,
+            ::showAzureStatus,
+            ::showRtcmStatus
+        )
         connectButton.setOnClickListener {
             connectButton.isEnabled = false
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
@@ -93,8 +106,21 @@ class MainActivity : AppCompatActivity() {
         }
         azureButton.setOnClickListener {
             azureRunning = true
+            pendingLiveStream = false
             updateControls()
             configurationPicker.launch(arrayOf("*/*"))
+        }
+        rtcmStartButton.setOnClickListener {
+            if (currentState != BluetoothSppService.State.CONNECTED || azureRunning) return@setOnClickListener
+            azureRunning = true
+            pendingLiveStream = true
+            updateControls()
+            configurationPicker.launch(arrayOf("*/*"))
+        }
+        rtcmStopButton.setOnClickListener {
+            rtcmStopButton.isEnabled = false
+            rtcmStatusText.text = "RTCM aktarımı güvenli biçimde durduruluyor…"
+            azureProbe.cancel()
         }
         disconnectButton.setOnClickListener {
             disconnectButton.isEnabled = false
@@ -116,9 +142,26 @@ class MainActivity : AppCompatActivity() {
         azureStatusText.text = message
         if (complete) {
             azureRunning = false
+            pendingLiveStream = false
             updateControls()
         }
         Log.i(TAG, "$TEST_VERSION | AZURE | $message")
+    }
+
+    private fun showRtcmStatus(update: AzureNtripProbe.LiveUpdate) {
+        val metrics = update.metrics
+        rtcmStatusText.text = "TLS: ${update.tlsStatus}\n" +
+            "NTRIP: ${update.ntripStatus}\n" +
+            "RTCM alınan: ${metrics.receivedBytes} B; doğrulanan mesaj: ${metrics.validatedMessages}; " +
+            "CRC hatası: ${metrics.crcFailures}; hatalı başlık: ${metrics.malformedHeaders}\n" +
+            "BXR1 gönderilen/ACK’li: ${metrics.acknowledgedBytes} B; ACK: ${metrics.acknowledgements}; " +
+            "NACK: ${metrics.negativeAcknowledgements}; retry: ${metrics.retries}\n" +
+            "Aktarım hızı: ${metrics.rateBytesPerSecond} B/s\nDurum: ${update.detail}"
+        Log.i(TAG, "$TEST_VERSION | RTCM | TLS=${update.tlsStatus} NTRIP=${update.ntripStatus} " +
+            "rx=${metrics.receivedBytes} valid=${metrics.validatedMessages} " +
+            "crc_fail=${metrics.crcFailures} ack_bytes=${metrics.acknowledgedBytes} " +
+            "ack=${metrics.acknowledgements} nack=${metrics.negativeAcknowledgements} " +
+            "retry=${metrics.retries} rate_Bps=${metrics.rateBytesPerSecond} state=${update.detail}")
     }
 
     private fun updateControls() {
@@ -131,6 +174,8 @@ class MainActivity : AppCompatActivity() {
         pingButton.isEnabled = ready
         rsaButton.isEnabled = ready
         azureButton.isEnabled = ready
+        rtcmStartButton.isEnabled = ready
+        rtcmStopButton.isEnabled = azureRunning && pendingLiveStream
         disconnectButton.isEnabled = currentState != BluetoothSppService.State.DISCONNECTED
     }
 

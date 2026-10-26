@@ -55,26 +55,15 @@ internal data class NtripResult(
     val measurementDurationMs: Long
 )
 
-/** Cleanup errors are secondary; each resource still gets a close attempt. */
-internal object ProbeResourceCleanup {
-    fun closeAll(vararg closeActions: () -> Unit) {
-        closeActions.forEach { close ->
-            try {
-                close()
-            } catch (_: Exception) {
-                // A peer may already have closed the TCP socket during TLS shutdown.
-            }
-        }
-    }
-}
+internal data class NtripHeaderStatus(val safeStatus: String, val success: Boolean)
 
-internal object NtripResponseReader {
+/** Reads only through CRLF-CRLF, leaving all subsequent binary body bytes untouched. */
+internal object NtripHeaderReader {
     private const val MAX_HEADER_BYTES = 16 * 1024
-    private const val BUFFER_SIZE = 4096
 
-    fun read(input: InputStream, windowSeconds: Long = 10): NtripResult {
-        require(windowSeconds > 0)
-        val headerDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+    fun read(input: InputStream, timeoutSeconds: Long = 10): NtripHeaderStatus {
+        require(timeoutSeconds > 0)
+        val headerDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
         val header = ByteArrayOutputStream()
         var previous = -1
         var beforePrevious = -1
@@ -105,8 +94,30 @@ internal object NtripResponseReader {
             statusLine.startsWith("HTTP/") && code != null -> "HTTP $code"
             else -> "tanınmayan yanıt"
         }
-        val success = code == "200"
-        if (!success) return NtripResult(safeStatus, false, 0, 0)
+        return NtripHeaderStatus(safeStatus, code == "200")
+    }
+}
+
+/** Cleanup errors are secondary; each resource still gets a close attempt. */
+internal object ProbeResourceCleanup {
+    fun closeAll(vararg closeActions: () -> Unit) {
+        closeActions.forEach { close ->
+            try {
+                close()
+            } catch (_: Exception) {
+                // A peer may already have closed the TCP socket during TLS shutdown.
+            }
+        }
+    }
+}
+
+internal object NtripResponseReader {
+    private const val BUFFER_SIZE = 4096
+
+    fun read(input: InputStream, windowSeconds: Long = 10): NtripResult {
+        require(windowSeconds > 0)
+        val header = NtripHeaderReader.read(input)
+        if (!header.success) return NtripResult(header.safeStatus, false, 0, 0)
 
         val buffer = ByteArray(BUFFER_SIZE)
         var count = 0L
@@ -118,6 +129,6 @@ internal object NtripResponseReader {
             count = Math.addExact(count, read.toLong())
         }
         val durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - measurementStart)
-        return NtripResult(safeStatus, true, count, durationMs)
+        return NtripResult(header.safeStatus, true, count, durationMs)
     }
 }

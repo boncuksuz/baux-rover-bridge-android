@@ -45,6 +45,18 @@ class NtripWireTest {
     }
 
     @Test
+    fun liveHeaderReaderLeavesBinaryBodyBytesUntouched() {
+        val body = byteArrayOf(0xD3.toByte(), 0x00, 0x0A, 0xFF.toByte())
+        val input = ByteArrayInputStream(
+            "ICY 200 OK\r\nServer: test\r\n\r\n".toByteArray(StandardCharsets.US_ASCII) + body
+        )
+        val header = NtripHeaderReader.read(input)
+        assertEquals("ICY 200", header.safeStatus)
+        assertTrue(header.success)
+        assertTrue(body.contentEquals(input.readBytes()))
+    }
+
+    @Test
     fun countsOnlyBodyBytesInReadWindow() {
         val header = "ICY 200 OK\r\n\r\n".toByteArray(StandardCharsets.US_ASCII)
         val body = byteArrayOf(0xD3.toByte(), 0, 2, 1, 2, 3)

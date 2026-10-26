@@ -23,7 +23,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="BRIDGE-0.2.2-MTLS-TEST"
+        android:text="BRIDGE-0.2.3-RTCM-STREAM"
         android:textSize="14sp" />
 
     <TextView
@@ -69,6 +69,28 @@
         android:layout_marginTop="8dp"
         android:text="Azure testi henüz çalıştırılmadı."
         android:textSize="15sp" />
+
+    <Button
+        android:id="@+id/rtcmStartButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:enabled="false"
+        android:text="@string/rtcm_start" />
+
+    <Button
+        android:id="@+id/rtcmStopButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:enabled="false"
+        android:text="@string/rtcm_stop" />
+
+    <TextView
+        android:id="@+id/rtcmStatusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Canlı RTCM aktarımı başlatılmadı."
+        android:textSize="14sp" />
 
     <Button
         android:id="@+id/disconnectButton"

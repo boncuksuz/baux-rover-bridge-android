@@ -5,6 +5,8 @@
     <string name="reconnect">Yeniden Bağlan</string>
     <string name="ping_test">PING Testi</string>
     <string name="rsa_test">RSA-PSS Testi</string>
-    <string name="azure_test">Azure mTLS / NTRIP Testi</string>
+    <string name="azure_test">10 sn Azure mTLS / NTRIP Ölçümü</string>
+    <string name="rtcm_start">RTCM Başlat</string>
+    <string name="rtcm_stop">RTCM Durdur</string>
     <string name="disconnect">Bağlantıyı Kes</string>
 </resources>

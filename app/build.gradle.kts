@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "BRIDGE-0.2.2-MTLS-TEST"
+        versionName = "BRIDGE-0.2.3-RTCM-STREAM"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
