@@ -1,5 +1,7 @@
 # BAU-X Rover Bridge Android
 
+Faz 2 adimlarinin kronolojik ozeti: [Versiyon Gunlugu](VERSIYON_GUNLUGU.md).
+
 Rover tarafindaki Bluetooth trafigi ile bulut tarafindaki duzeltme/kimlik dogrulama servisleri arasinda kopru kuran Android Kotlin uygulamasi.
 
 ## Proje ne yapar
@@ -42,16 +44,29 @@ Rover tarafindaki Bluetooth trafigi ile bulut tarafindaki duzeltme/kimlik dogrul
 - Android Gradle Plugin 8.5.2.
 - JDK 11+ gerekir (JDK 17 onerilir).
 
-## Mevcut durum
-Bu depo iskelet bir temel saglar. Cekirdek servisler mevcut olsa da uretim icin bazi gereksinimler henuz tamamlanmamistir:
-- mTLS istemci sertifikasi yonetimi.
-- Bluetooth baglanti yasam dongusu ve yeniden deneme mekanizmalari.
-- Asenkron/arka plan calistirma ve guclu hata yonetimi.
-- Gercek backend ve rover cihazi ile uctan uca entegrasyon.
+## Faz 2C: Azure mTLS denemesi
 
-## Onerilen sonraki adimlar
-1. Backend base URL yapilandirmasini ve ortam ayrimini ekle.
-2. Android Keystore ile guvenli anahtar/sertifika yuklemeyi uygula.
-3. Ag ve akis donguleri icin coroutine tabanli is parcacigi yonetimi ekle.
-4. Loglama, telemetri ve kullaniciya gorunur durum modelini ekle.
-5. HELLO parse/dogrulama ve akis kopruleme davranisi icin birim/entegrasyon testleri ekle.
+`BRIDGE-0.2.2-MTLS-TEST` ekranda ve Logcat'te gorunur. Azure testi, mevcut
+BAUX-ROVER SPP baglantisi uzerinden ESP32'ye yalnizca TLS CertificateVerify
+SHA-256 ozetini imzalatir. Uygulama istemci sertifikasinin acik anahtarini ve
+guvenilir CA sertifikasini tasir; ozel anahtari tasimaz. TLS 1.2, PKIX zinciri
+ve sunucu kimligi denetlenir. NTRIP GET yanitinin durumu ve 10 saniyedeki
+RTCM govde baytlari olculur; RTCM henuz rover'a aktarilmaz.
+
+Gercek NTRIP ayarlari `ntrip-local.properties.example` orneginden
+`ntrip-local.properties` dosyasina yazilir. Bu dosya Git tarafindan yok sayilir,
+APK'ye eklenmez ve test baslatilirken Android belge secicisinden okunur.
+`authorizationBase64`, `kullanici:sifre` ifadesinin Base64 kodudur; gizli
+bilgi sayilir. Dosyayi telefona guvenli bicimde aktarip testten sonra kaldirin.
+`allowIpCnFallback` varsayilan olarak `false` olmalidir. Yalnizca eski Azure
+sunucu sertifikasinda IP SAN bulunmadigi ve CN ayarlanan IP ile tam eslestigi
+biliniyorsa `true` yapin. Bu istisna PKIX dogrulamasini kapatmaz, ancak
+modern IP SAN kimlik denetiminden daha zayiftir. Bu testte iptal listesi
+(revocation) denetimi ve SPKI pin bulunmaz.
+
+Telefon testi: Debug APK'yi kurun; Android ayarlarinda BAUX-ROVER ile eslestirin;
+uygulamada Baglan, PING Testi ve RSA-PSS Testi'ni sirayla calistirin. Ardindan
+Azure mTLS Testi'ne dokunup yerel ayar dosyasini secin. Ekranda TLS sonucu,
+NTRIP durumu, handshake/imza sureleri ve 10 saniyelik bayt sayisi gorunur.
+PING/PONG veya TLS basarisi, Bluetooth baglanti sifrelemesinin bagimsiz kaniti
+degildir; bu dogrulama hala aciktir.

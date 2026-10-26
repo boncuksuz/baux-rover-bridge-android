@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0"
+        versionName = "BRIDGE-0.2.2-MTLS-TEST"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -35,6 +35,14 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    packaging {
+        resources {
+            excludes += "META-INF/versions/**/OSGI-INF/MANIFEST.MF"
+            pickFirsts += "META-INF/LICENSE.md"
+            pickFirsts += "META-INF/NOTICE.md"
+        }
+    }
 }
 
 dependencies {
@@ -45,5 +53,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.bouncycastle:bctls-jdk18on:1.86.2")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.86")
 }

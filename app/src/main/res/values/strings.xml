@@ -5,5 +5,6 @@
     <string name="reconnect">Yeniden Bağlan</string>
     <string name="ping_test">PING Testi</string>
     <string name="rsa_test">RSA-PSS Testi</string>
+    <string name="azure_test">Azure mTLS / NTRIP Testi</string>
     <string name="disconnect">Bağlantıyı Kes</string>
 </resources>

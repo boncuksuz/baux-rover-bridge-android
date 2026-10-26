@@ -42,7 +42,11 @@ internal object RsaPssProtocol {
     fun requestBytes(): ByteArray {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(TEST_MESSAGE.toByteArray(StandardCharsets.UTF_8))
-        check(digest.size == 32)
+        return requestBytes(digest)
+    }
+
+    fun requestBytes(digest: ByteArray): ByteArray {
+        require(digest.size == 32) { "RSA-PSS isteği 32 bayt SHA-256 özeti gerektirir." }
         val request = StringBuilder(REQUEST_PREFIX.length + 65).append(REQUEST_PREFIX)
         for (byte in digest) {
             val value = byte.toInt() and 0xff

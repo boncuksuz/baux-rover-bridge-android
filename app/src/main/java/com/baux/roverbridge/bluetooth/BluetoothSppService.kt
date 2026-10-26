@@ -23,8 +23,10 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Locale
 
@@ -234,6 +236,99 @@ class BluetoothSppService(
         }
     }
 
+    /** TLS oturumu boyunca PING ve bağımsız RSA testini dışlar. */
+    @Throws(IOException::class)
+    fun beginTlsSignerSession(): TlsSignerSession {
+        val request = synchronized(lock) {
+            if (stopped || testBusy || socket == null || input == null || output == null) {
+                throw IOException("Bluetooth bağlantısı TLS imzası için hazır değil.")
+            }
+            testBusy = true
+            generation
+        }
+        return TlsSignerSession(request)
+    }
+
+    inner class TlsSignerSession internal constructor(private val request: Int) : AutoCloseable {
+        @Volatile var lastSignatureElapsedUs: Long = -1
+            private set
+
+        /** TLS ağ iş parçacığından çağrılır; mevcut Bluetooth worker'ında tek imza yürütür. */
+        @Throws(IOException::class)
+        fun sign(sha256Hash: ByteArray): ByteArray {
+            if (sha256Hash.size != 32) throw IOException("TLS imzası 32 bayt SHA-256 özeti gerektirir.")
+            val future = worker.submit<RemoteSignature> {
+                signHashOnWorker(request, sha256Hash.copyOf())
+            }
+            val result = try {
+                future.get(RSA_TIMEOUT_SECONDS + 5, TimeUnit.SECONDS)
+            } catch (error: ExecutionException) {
+                throw (error.cause as? IOException ?: IOException("Bluetooth imzası başarısız.", error.cause))
+            } catch (error: TimeoutException) {
+                future.cancel(true)
+                throw IOException("Bluetooth imzası zaman aşımı.", error)
+            } catch (error: InterruptedException) {
+                future.cancel(true)
+                Thread.currentThread().interrupt()
+                throw IOException("Bluetooth imzası iptal edildi.", error)
+            }
+            lastSignatureElapsedUs = result.elapsedUs
+            return result.bytes
+        }
+
+        override fun close() {
+            synchronized(lock) { if (isCurrentLocked(request)) testBusy = false }
+        }
+    }
+
+    private data class RemoteSignature(val bytes: ByteArray, val elapsedUs: Long)
+
+    private fun signHashOnWorker(request: Int, hash: ByteArray): RemoteSignature {
+        val (activeSocket, activeInput, activeOutput) = synchronized(lock) {
+            if (!isCurrentLocked(request) || !testBusy) {
+                throw IOException("Bluetooth bağlantısı imza sırasında değişti.")
+            }
+            Triple(socket ?: throw IOException("Bluetooth bağlantısı kapandı."),
+                input ?: throw IOException("Bluetooth girişi kapandı."),
+                output ?: throw IOException("Bluetooth çıkışı kapandı."))
+        }
+        val timedOut = AtomicBoolean(false)
+        val timeout = timeoutWorker.schedule({
+            timedOut.set(true)
+            closeSocket(activeSocket)
+        }, RSA_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        try {
+            activeOutput.write(RsaPssProtocol.requestBytes(hash))
+            activeOutput.flush()
+            var elapsedUs = -1L
+            var unrelatedLines = 0
+            while (true) {
+                when (val response = RsaPssProtocol.parseResponse(readResponseLine(activeInput))) {
+                    is RsaPssProtocol.Response.Metrics -> elapsedUs = response.elapsedUs
+                    is RsaPssProtocol.Response.SignatureBytes -> {
+                        if (elapsedUs < 0) throw IOException("ESP32 imzası metrik satırı olmadan geldi.")
+                        if (timedOut.get()) throw SocketTimeoutException("Bluetooth imzası zaman aşımı.")
+                        return RemoteSignature(response.bytes, elapsedUs)
+                    }
+                    is RsaPssProtocol.Response.DeviceError ->
+                        throw IOException("ESP32 imza hatası: ${response.code}")
+                    RsaPssProtocol.Response.Diagnostic -> {
+                        if (++unrelatedLines > 256) throw IOException("Çok fazla tanılama satırı geldi.")
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            closeSocket(activeSocket)
+            reportIfCurrent(request, State.DISCONNECTED,
+                "Bluetooth imzası başarısız; bağlantı kapandı. Yeniden bağlanabilirsiniz.")
+            throw if (timedOut.get()) SocketTimeoutException("Bluetooth imzası zaman aşımı.")
+                else IOException("Bluetooth imzası başarısız: ${error.message ?: error.javaClass.simpleName}", error)
+        } finally {
+            timeout.cancel(false)
+            hash.fill(0)
+        }
+    }
+
     private fun loadClientPublicKey(): PublicKey =
         context.resources.openRawResource(R.raw.rover_client_certificate).use { stream ->
             val certificate = CertificateFactory.getInstance("X.509")
@@ -248,6 +343,7 @@ class BluetoothSppService(
             val value = stream.read()
             if (value < 0) throw EOFException("İmza yanıtı eksik kaldı.")
             if (value == '\n'.code) return line.toString().trimEnd('\r')
+            if (value > 0x7f) throw IOException("RSA yanıtında ASCII dışı bayt var.")
             if (line.length >= 640) throw IOException("İmza yanıtı çok uzun.")
             line.append(value.toChar())
         }

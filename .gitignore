@@ -2,6 +2,7 @@
 .gradle/
 **/build/
 local.properties
+ntrip-local.properties
 
 # IDE and editor state
 .idea/

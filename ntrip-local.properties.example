@@ -1,0 +1,8 @@
+# Copy to ntrip-local.properties outside Git, then transfer that file to the phone.
+# The app reads it through Android's document picker; it is never bundled in the APK.
+host=40.113.171.245
+port=443
+mountpoint=/UM980BASE
+authorizationBase64=YWRtaW46YWRtaW4xMjM=
+# Enable only for the known legacy server IP certificate with no IP SAN.
+allowIpCnFallback=false

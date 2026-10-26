@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:fillViewport="true">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical"
     android:padding="16dp">
 
@@ -18,7 +23,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="BRIDGE-0.2.1-RSA-TEST"
+        android:text="BRIDGE-0.2.2-MTLS-TEST"
         android:textSize="14sp" />
 
     <TextView
@@ -51,6 +56,21 @@
         android:text="@string/rsa_test" />
 
     <Button
+        android:id="@+id/azureButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:enabled="false"
+        android:text="@string/azure_test" />
+
+    <TextView
+        android:id="@+id/azureStatusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Azure testi henüz çalıştırılmadı."
+        android:textSize="15sp" />
+
+    <Button
         android:id="@+id/disconnectButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -58,3 +78,4 @@
         android:text="@string/disconnect" />
 
 </LinearLayout>
+</ScrollView>
