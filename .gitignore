@@ -1,0 +1,42 @@
+# Gradle and Android build output
+.gradle/
+**/build/
+local.properties
+
+# IDE and editor state
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Signing material and local credentials
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.p8
+*.pk8
+*.mobileprovision
+*.certSigningRequest
+signing.properties
+keystore.properties
+
+# Local environment files (keep examples shareable)
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Generated packages, logs, and temporary files
+*.apk
+*.aab
+*.ap_
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
