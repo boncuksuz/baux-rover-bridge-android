@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BAU-X Rover Bridge</string>
+    <string name="connect">Bağlan</string>
+    <string name="reconnect">Yeniden Bağlan</string>
+    <string name="ping_test">PING Testi</string>
+    <string name="disconnect">Bağlantıyı Kes</string>
 </resources>
