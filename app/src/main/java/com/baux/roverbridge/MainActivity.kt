@@ -22,13 +22,14 @@ import com.baux.roverbridge.bluetooth.BluetoothSppService
 class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "BauxRoverBridge"
-        private const val TEST_VERSION = "BRIDGE-0.2.0-SPP-TEST"
+        private const val TEST_VERSION = "BRIDGE-0.2.1-RSA-TEST"
     }
 
     private lateinit var bluetooth: BluetoothSppService
     private lateinit var statusText: TextView
     private lateinit var connectButton: Button
     private lateinit var pingButton: Button
+    private lateinit var rsaButton: Button
     private lateinit var disconnectButton: Button
 
     private val connectPermission = registerForActivityResult(
@@ -45,6 +46,7 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         connectButton = findViewById(R.id.connectButton)
         pingButton = findViewById(R.id.pingButton)
+        rsaButton = findViewById(R.id.rsaButton)
         disconnectButton = findViewById(R.id.disconnectButton)
         findViewById<TextView>(R.id.versionText).text = TEST_VERSION
 
@@ -64,6 +66,10 @@ class MainActivity : AppCompatActivity() {
             pingButton.isEnabled = false
             bluetooth.ping()
         }
+        rsaButton.setOnClickListener {
+            rsaButton.isEnabled = false
+            bluetooth.rsaPssTest()
+        }
         disconnectButton.setOnClickListener {
             disconnectButton.isEnabled = false
             bluetooth.disconnect()
@@ -79,6 +85,7 @@ class MainActivity : AppCompatActivity() {
         connectButton.setText(if (state == BluetoothSppService.State.CONNECTED)
             R.string.reconnect else R.string.connect)
         pingButton.isEnabled = state == BluetoothSppService.State.CONNECTED
+        rsaButton.isEnabled = state == BluetoothSppService.State.CONNECTED
         disconnectButton.isEnabled = state != BluetoothSppService.State.DISCONNECTED
         Log.i(TAG, "$TEST_VERSION | $state | $message")
     }
