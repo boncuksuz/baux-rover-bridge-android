@@ -1,0 +1,9 @@
+.gradle/
+.idea/
+**/build/
+local.properties
+*.iml
+captures/
+*.zip
+/camera_timestamp_test/
+/camera_timestamp_test/
