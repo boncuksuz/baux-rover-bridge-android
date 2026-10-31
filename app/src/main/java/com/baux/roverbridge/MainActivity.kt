@@ -23,11 +23,12 @@ import com.baux.roverbridge.tls.AzureNtripProbe
 class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "BauxRoverBridge"
-        private const val TEST_VERSION = "BRIDGE-0.2.3-RTCM-STREAM"
+        private val TEST_VERSION = BuildConfig.VERSION_NAME
     }
 
     private lateinit var bluetooth: BluetoothSppService
     private lateinit var statusText: TextView
+    private lateinit var ggaStatusText: TextView
     private lateinit var connectButton: Button
     private lateinit var pingButton: Button
     private lateinit var rsaButton: Button
@@ -67,6 +68,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         statusText = findViewById(R.id.statusText)
+        ggaStatusText = findViewById(R.id.ggaStatusText)
         connectButton = findViewById(R.id.connectButton)
         pingButton = findViewById(R.id.pingButton)
         rsaButton = findViewById(R.id.rsaButton)
@@ -78,7 +80,9 @@ class MainActivity : AppCompatActivity() {
         disconnectButton = findViewById(R.id.disconnectButton)
         findViewById<TextView>(R.id.versionText).text = TEST_VERSION
 
-        bluetooth = BluetoothSppService(applicationContext, ::showState)
+        bluetooth = BluetoothSppService(applicationContext, ::showState) { summary ->
+            ggaStatusText.text = summary
+        }
         azureProbe = AzureNtripProbe(
             applicationContext,
             bluetooth,

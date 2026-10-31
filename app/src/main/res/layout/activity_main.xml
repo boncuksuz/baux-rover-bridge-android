@@ -23,7 +23,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="BRIDGE-0.2.3-RTCM-STREAM"
+        android:text="BRIDGE-0.2.5-GGA-TEST"
         android:textSize="14sp" />
 
     <TextView
@@ -33,6 +33,15 @@
         android:layout_marginTop="12dp"
         android:text="BAUX-ROVER"
         android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/ggaStatusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="GGA bekleniyor. GGA UTC ölçüm saatidir; Bluetooth geliş saati ayrı kaydedilir."
+        android:textIsSelectable="true"
+        android:textSize="14sp" />
 
     <Button
         android:id="@+id/connectButton"

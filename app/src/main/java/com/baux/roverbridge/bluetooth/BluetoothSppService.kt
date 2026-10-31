@@ -10,8 +10,11 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.baux.roverbridge.R
+import com.baux.roverbridge.BuildConfig
+import com.baux.roverbridge.gga.GgaForwardService
 import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
@@ -27,6 +30,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Locale
 import java.security.SecureRandom
@@ -34,7 +38,8 @@ import java.security.SecureRandom
 /** Eşleştirilmiş BAUX-ROVER cihazına güvenli RFCOMM SPP bağlantısı. */
 class BluetoothSppService(
     private val context: Context,
-    private val onStateChanged: (State, String) -> Unit
+    private val onStateChanged: (State, String) -> Unit,
+    private val onGgaReceived: (String) -> Unit = {}
 ) {
     enum class State { DISCONNECTED, CONNECTING, CONNECTED, TESTING, RTCM_STREAMING }
 
@@ -60,6 +65,56 @@ class BluetoothSppService(
     private val worker = Executors.newSingleThreadExecutor()
     private val timeoutWorker = Executors.newSingleThreadScheduledExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val ggaParser = GgaForwardService()
+    private var readerGeneration = -1
+    private var ggaCount = 0L
+    private val lineRouter = SppLineRouter(::handleGgaLine)
+    private val idleQueued = AtomicBoolean(false)
+    private val idlePoll = timeoutWorker.scheduleWithFixedDelay({
+        if (idleQueued.compareAndSet(false, true)) {
+            try {
+                worker.execute {
+                    try { readIdleTelemetry() } finally { idleQueued.set(false) }
+                }
+            } catch (_: RejectedExecutionException) { idleQueued.set(false) }
+        }
+    }, 100, 100, TimeUnit.MILLISECONDS)
+
+    private fun handleGgaLine(line: String, arrivalNs: Long) {
+        val request = readerGeneration
+        if (!isCurrent(request)) return
+        try {
+            val observation = ggaParser.parse(line, arrivalNs)
+            val summary = "GGA #${++ggaCount} | ${observation.summary()}"
+            Log.i("BauxGga", "${BuildConfig.VERSION_NAME} | $summary | raw=${observation.raw}")
+            mainHandler.post { if (isCurrent(request)) onGgaReceived(summary) }
+        } catch (error: IllegalArgumentException) {
+            Log.w("BauxGga", "${BuildConfig.VERSION_NAME} | GGA_REJECTED reason=${error.message} android_line_complete_elapsed_ns=$arrivalNs")
+        }
+    }
+
+    /** No second socket reader: idle telemetry uses the same serialized worker. */
+    private fun readIdleTelemetry() {
+        val active = synchronized(lock) {
+            if (stopped || testBusy || input == null || socket == null) null
+            else Triple(generation, input!!, socket!!)
+        } ?: return
+        try {
+            var budget = 1024
+            while (budget-- > 0 && active.second.available() > 0 && isCurrent(active.first)) {
+                val value = active.second.read()
+                if (value < 0) throw EOFException("Bluetooth bağlantısı kapandı.")
+                lineRouter.feed(value, SystemClock.elapsedRealtimeNanos())?.let(lineRouter::rememberControl)
+            }
+        } catch (error: IOException) {
+            if (isCurrent(active.first)) {
+                closeSocket(active.third)
+                reportIfCurrent(active.first, State.DISCONNECTED, "Bluetooth okuma hatası: ${error.message}")
+            }
+        }
+    }
+
 
     fun isConnected(): Boolean = input != null && output != null
 
@@ -118,6 +173,9 @@ class BluetoothSppService(
 
             val newInput = connectingSocket.inputStream
             val newOutput = connectingSocket.outputStream
+            lineRouter.reset()
+            readerGeneration = request
+            ggaCount = 0
             synchronized(lock) {
                 if (!isCurrentLocked(request) || socket !== connectingSocket) return
                 input = newInput
@@ -492,9 +550,11 @@ class BluetoothSppService(
         isCancelled: () -> Boolean
     ): String {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
-        val line = StringBuilder()
         while (SystemClock.elapsedRealtime() < deadline) {
             if (isCancelled() || !isCurrent(request)) throw IOException("Bluetooth işlemi iptal edildi.")
+            lineRouter.pollControl()?.let { response ->
+                if (isProtocolResponse(response)) return response
+            }
             val available = stream.available()
             if (available <= 0) {
                 try {
@@ -508,19 +568,16 @@ class BluetoothSppService(
             repeat(minOf(available, 256)) {
                 val value = stream.read()
                 if (value < 0) throw EOFException("Bluetooth bağlantısı yanıt sırasında kapandı.")
-                if (value == '\n'.code) {
-                    val response = line.toString().trimEnd('\r')
-                    if (response.startsWith("@RTCM:") || response.startsWith("@RSIG:") ||
-                        response.startsWith("RSIG_METRICS ")) return response
-                    line.clear()
-                } else if (value != '\r'.code) {
-                    if (line.length >= 640) throw IOException("Bluetooth yanıt satırı çok uzun.")
-                    line.append(value.toChar())
+                lineRouter.feed(value, SystemClock.elapsedRealtimeNanos())?.let { response ->
+                    if (isProtocolResponse(response)) return response
                 }
             }
         }
         throw SocketTimeoutException("Bluetooth yanıt zaman aşımı.")
     }
+
+    private fun isProtocolResponse(line: String): Boolean = line.startsWith("@RTCM:") ||
+        line.startsWith("@RSIG:") || line.startsWith("@UV:") || line.startsWith("RSIG_METRICS ")
 
     private fun loadClientPublicKey(): PublicKey =
         context.resources.openRawResource(R.raw.rover_client_certificate).use { stream ->
@@ -531,29 +588,23 @@ class BluetoothSppService(
         }
 
     private fun readResponseLine(stream: InputStream): String {
-        val line = StringBuilder()
+        lineRouter.pollControl()?.let { return it }
         while (true) {
             val value = stream.read()
             if (value < 0) throw EOFException("İmza yanıtı eksik kaldı.")
-            if (value == '\n'.code) return line.toString().trimEnd('\r')
-            if (value > 0x7f) throw IOException("RSA yanıtında ASCII dışı bayt var.")
-            if (line.length >= 640) throw IOException("İmza yanıtı çok uzun.")
-            line.append(value.toChar())
+            lineRouter.feed(value, SystemClock.elapsedRealtimeNanos())?.let { return it }
         }
     }
 
     private fun readPong(stream: InputStream): Boolean {
-        val line = StringBuilder()
+        while (true) {
+            val buffered = lineRouter.pollControl() ?: break
+            if (buffered == "PONG") return true
+        }
         while (true) {
             val value = stream.read()
             if (value < 0) return false
-            if (value == '\n'.code) {
-                if (line.toString() == "PONG") return true
-                line.clear()
-            } else if (value != '\r'.code) {
-                if (line.length >= 256) throw IOException("Bluetooth yanıtı çok uzun.")
-                line.append(value.toChar())
-            }
+            if (lineRouter.feed(value, SystemClock.elapsedRealtimeNanos()) == "PONG") return true
         }
     }
 
@@ -578,6 +629,7 @@ class BluetoothSppService(
             testBusy = false
             socket
         }
+        idlePoll.cancel(false)
         timeoutWorker.execute {
             current?.let { closeSocket(it) }
             timeoutWorker.shutdownNow()
